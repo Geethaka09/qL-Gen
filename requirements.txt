@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+cohere
+openai
+groq
+azure-cosmos
+scikit-learn
+nltk
+rouge-score
+numpy
+python-dotenv

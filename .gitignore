@@ -1,0 +1,19 @@
+# Environment variables - NEVER commit this
+.env
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Test/scratch files
+test_api.py
+test_tokens.py
+clean_results.txt
+token_results.txt
+q_gen2.py
