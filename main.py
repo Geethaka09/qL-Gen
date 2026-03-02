@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List
 
 import cohere
 from openai import AsyncOpenAI
@@ -50,9 +51,11 @@ async def verify_team_key(api_key: str = Depends(api_key_header)):
 class UserParameters(BaseModel):
     target_topic: str
     proficiency: str
-    cognitive_difficulty: str
+    cognitive_difficulty: List[List[float]]  # e.g. [[p_tol_easy, p_tol_med, p_tol_hard], [...]]
     historical_gaps: str
-    gamification: str
+    gamification_level: int          # raw int from DB: current_level
+    gamification_streak: int         # raw int from DB: current_streak
+    gamification_badge: str          # raw string from DB: badge_name
 
 # ==========================================
 # PHASE 1: RETRIEVER (Azure Cosmos DB)
@@ -106,10 +109,13 @@ class Agent2GPT:
     async def generate(self, payload):
         params = payload['user_parameters']
         system_prompt = f"""
-        TASK: Create an educational reading and exactly 15 multiple-choice quiz questions.
-        RULES: Use ONLY 'Ground Truth Facts'. Proficiency: {params['proficiency']}. 
-        Difficulty: {params['cognitive_difficulty']}. Gaps: {params['historical_gaps']}. Tone: {params['gamification']}.
-        FORMAT: Return strictly valid JSON containing "educational_content" and a "quiz" array of 15 objects.
+        TASK: Create an educational reading and exactly 15 multiple-choice quiz questions on the topic: '{params['target_topic']}'.
+        RULES: Use ONLY the provided 'Ground Truth Facts'. Do NOT invent any information.
+        - Student Proficiency: {params['proficiency']}
+        - Cognitive Difficulty: {params['cognitive_difficulty']}
+        - Known Knowledge Gaps to address: {params['historical_gaps']}
+        - Gamification Tone (write as a dungeon master): {params['gamification']}
+        FORMAT: Return strictly valid JSON with two keys: "educational_content" (string) and "quiz" (array of exactly 15 objects, each with: "question", "correct_answer", "distractors" array of 3 strings).
         """
         user_prompt = f"Ground Truth Facts:\n{json.dumps(payload['retrieved_ground_truth'])}"
         response = await self.client.chat.completions.create(
@@ -127,9 +133,13 @@ class Agent3Groq:
     async def generate(self, payload):
         params = payload['user_parameters']
         system_prompt = f"""
-        TASK: Create an educational reading and exactly 15 multiple-choice quiz questions.
-        RULES: Use ONLY 'Ground Truth Facts'. Target: {params['proficiency']}. Depth: {params['cognitive_difficulty']}. Flavor: {params['gamification']}.
-        FORMAT: Return strictly valid JSON containing "educational_content" and a "quiz" array of 15 objects.
+        TASK: Create an educational reading and exactly 15 multiple-choice quiz questions on the topic: '{params['target_topic']}'.
+        RULES: Use ONLY the provided 'Ground Truth Facts'. Do NOT invent any information.
+        - Student Proficiency: {params['proficiency']}
+        - Cognitive Difficulty: {params['cognitive_difficulty']}
+        - Known Knowledge Gaps to address: {params['historical_gaps']}
+        - Gamification Tone (write as a dungeon master): {params['gamification']}
+        FORMAT: Return strictly valid JSON with two keys: "educational_content" (string) and "quiz" (array of exactly 15 objects, each with: "question", "correct_answer", "distractors" array of 3 strings).
         """
         user_prompt = f"Ground Truth Facts:\n{json.dumps(payload['retrieved_ground_truth'])}"
         response = await self.client.chat.completions.create(
@@ -255,11 +265,36 @@ async def skillquest_orchestrator(phase_1_payload, max_retries=3):
 # ==========================================
 # THE API ENDPOINT (Node.js talks to this!)
 # ==========================================
+def map_cognitive_difficulty(tol_matrix: List[List[float]]) -> str:
+    """Flatten the 2D tolerance matrix and pick the highest-scoring level."""
+    flat = [val for row in tol_matrix for val in row]
+    if not flat:
+        return "Application (Medium Difficulty). Test their ability to use the concept."
+    idx = flat.index(max(flat)) % 3  # 0=easy, 1=medium, 2=hard
+    labels = [
+        "Memorization / Knowledge (Easy Difficulty). Ask 'What is X?' style questions.",
+        "Application (Medium Difficulty). Ask 'How do you use X?' style questions.",
+        "Evaluation / Critical Thinking (Hard Difficulty). Ask 'Find the bug in this X code.' style questions."
+    ]
+    return labels[idx]
+
+
 @app.post("/api/generate-lesson")
 async def generate_lesson(params: UserParameters, key: str = Depends(verify_team_key)):
     try:
         nodejs_inputs = params.model_dump()
-        
+
+        # Convert raw DB values into LLM-readable strings
+        nodejs_inputs["cognitive_difficulty"] = map_cognitive_difficulty(params.cognitive_difficulty)
+        nodejs_inputs["gamification"] = (
+            f"Level {params.gamification_level}, on a {params.gamification_streak}-day login streak. "
+            f"Recently earned the '{params.gamification_badge}' badge."
+        )
+        # Remove raw fields so only the narrative string reaches agents
+        nodejs_inputs.pop("gamification_level", None)
+        nodejs_inputs.pop("gamification_streak", None)
+        nodejs_inputs.pop("gamification_badge", None)
+
         retriever = Agent1Retriever()
         phase_1 = retriever.execute(nodejs_inputs)
         
