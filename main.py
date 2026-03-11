@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security.api_key import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict, Any
 
 import cohere
 from openai import AsyncOpenAI
@@ -146,7 +146,7 @@ class Agent3Groq:
         )
         return json.loads(response.choices[0].message.content)
 
-async def run_phase_2_bulk(phase_1_output):
+async def run_phase_2_bulk(phase_1_output: Dict[str, Any]) -> Dict[str, Any]:
     agent_2, agent_3 = Agent2GPT(), Agent3Groq()
     results = await asyncio.gather(agent_2.generate(phase_1_output), agent_3.generate(phase_1_output))
     return {
@@ -197,7 +197,7 @@ class Agent4Auditor:
     def __init__(self):
         self.client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY_AGENT_4"))
 
-    async def verify_fact(self, fact, ground_truth):
+    async def verify_fact(self, fact: str, ground_truth: str) -> Dict[str, Any]:
         system_prompt = "Verify if Claim is reasonably supported by Ground Truth. Output ONLY valid JSON: {\"fact_is_proven\": true/false}."
         try:
             response = await self.client.chat.completions.create(
@@ -212,14 +212,14 @@ class Agent4Auditor:
             print(f"[Firewall] verify_fact exception (treated as passed): {e}")
             return {"fact_is_proven": True}
 
-    async def execute_firewall(self, winner_json, ground_truth):
+    async def execute_firewall(self, winner_json: Dict[str, Any], ground_truth: str) -> Dict[str, Any]:
         facts = [s.strip() for s in nltk.sent_tokenize(winner_json['educational_content']) if len(s.strip()) > 10]
         if not facts:
             return {"is_clean": False}
 
         # Cap concurrent Groq calls to avoid rate-limit 429s
         semaphore = asyncio.Semaphore(5)
-        async def bounded_verify(fact):
+        async def bounded_verify(fact: str) -> Dict[str, Any]:
             async with semaphore:
                 return await self.verify_fact(fact, ground_truth)
 
@@ -262,7 +262,7 @@ def enforce_15_questions(winner_json: dict) -> dict:
     return winner_json
 
 
-async def skillquest_orchestrator(phase_1_payload, max_retries=3):
+async def skillquest_orchestrator(phase_1_payload: Dict[str, Any], max_retries: int = 3) -> Dict[str, Any]:
     # Bug 1 fix: fail fast if the retriever returned no grounding data
     if not phase_1_payload.get("retrieved_ground_truth"):
         return {"success": False, "error": "Retriever returned no ground truth chunks. Check Cosmos DB connection and container name."}
