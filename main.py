@@ -38,14 +38,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Security: The password your Node.js backend must send
-TEAM_SECRET_KEY = "skillquest-team-alpha-2026"
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
-
-async def verify_team_key(api_key: str = Depends(api_key_header)):
-    if api_key != TEAM_SECRET_KEY:
-        raise HTTPException(status_code=403, detail="Unauthorized: Invalid Team Key")
-    return api_key
+# 2. Security (Removed for open access)
+# No API key required for internal use
 
 # 3. Define the incoming Data format from Node.js
 class UserParameters(BaseModel):
@@ -244,14 +238,17 @@ class Agent1Finisher:
         self.co = cohere.Client(os.environ.get("COHERE_API_KEY"))
 
     def execute_final_polish(self, validated_json, user_params):
-        style_prompt = "- Format text beautifully.\n- Format the 15 questions clearly."
-        system_prompt = f"TASK: Transform JSON into Markdown. RULES: {style_prompt}. Target: {user_params['proficiency']}."
+        style_prompt = "- Format the educational text beautifully using Markdown."
+        system_prompt = f"TASK: Transform the provided text into beautifully formatted Markdown. RULES: {style_prompt}. Target: {user_params['proficiency']}."
         response = self.co.chat(
-            message=f"JSON: {json.dumps(validated_json)}",
+            message=validated_json.get("educational_content", ""),
             preamble=system_prompt,
             model="command-r-plus-08-2024"
         )
-        return response.text
+        return {
+            "content": response.text,
+            "quiz": validated_json.get("quiz", [])
+        }
 
 # ==========================================
 # THE ORCHESTRATOR LOOP
@@ -321,7 +318,7 @@ def map_cognitive_difficulty(tol_matrix: List[List[float]]) -> str:
 
 
 @app.post("/api/generate-lesson")
-async def generate_lesson(params: UserParameters, key: str = Depends(verify_team_key)):
+async def generate_lesson(params: UserParameters):
     try:
         nodejs_inputs = params.model_dump()
 
@@ -343,8 +340,8 @@ async def generate_lesson(params: UserParameters, key: str = Depends(verify_team
         
         if loop_result["success"]:
             finisher = Agent1Finisher()
-            final_markdown = finisher.execute_final_polish(loop_result["validated_json"], nodejs_inputs)
-            return {"status": "success", "data": final_markdown}
+            final_data = finisher.execute_final_polish(loop_result["validated_json"], nodejs_inputs)
+            return {"status": "success", "data": final_data}
         else:
             raise HTTPException(status_code=500, detail=loop_result["error"])
 
